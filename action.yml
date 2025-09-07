@@ -1,0 +1,136 @@
+name: "versite publish"
+description: "Publish a version of your docs with versite"
+branding:
+  icon: box
+  color: gray-dark
+inputs:
+  path:
+    description: "Path to built docs to deploy"
+    required: true
+  version:
+    description: "Version label to deploy"
+    required: true
+  aliases:
+    description: "Aliases: space/newline-separated, or YAML/JSON array (e.g. [latest,stable])"
+    required: false
+    default: ""
+  title:
+    description: "Title used for the deployed version"
+    required: false
+    default: ""
+  remote:
+    description: "Git remote to push to"
+    required: false
+    default: "origin"
+  branch:
+    description: "Branch to deploy to"
+    required: false
+    default: "gh-pages"
+  message:
+    description: "Commit message for the deployment"
+    required: false
+    default: ""
+  push:
+    description: "Whether to push the deployment commit"
+    required: false
+    default: "true"
+  deploy-prefix:
+    description: "Prefix to add to deployed paths"
+    required: false
+    default: ""
+  versite-path:
+    description: "Path to a prebuilt versite binary on the runner"
+    required: false
+    default: ""
+  versite-tag:
+    description: "Release tag for installing versite (when not providing versite_path)"
+    required: false
+    default: ""
+runs:
+  using: "composite"
+  steps:
+    - name: Validate required deploy inputs
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -z "${{ inputs.path }}" ]; then
+          echo "'path' input is required" >&2
+          exit 1
+        fi
+        if [ -z "${{ inputs.version }}" ]; then
+          echo "'version' input is required" >&2
+          exit 1
+        fi
+
+    - name: Use provided versite binary
+      id: use-provided
+      if: ${{ inputs.versite-path != '' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/bin"
+        VERSITE_SRC="${{ inputs.versite-path }}"
+        if [ ! -f "$VERSITE_SRC" ]; then
+          echo "Provided versite_path not found: $VERSITE_SRC" >&2
+          exit 1
+        fi
+        cp "$VERSITE_SRC" "$RUNNER_TEMP/bin/versite"
+        chmod +x "$RUNNER_TEMP/bin/versite"
+        echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+    - name: Install versite from GitHub Release
+      if: ${{ inputs.versite-path == '' }}
+      uses: sigoden/install-binary@v1
+      with:
+        repo: ConnerPetzold/versite
+        tag: ${{ inputs.versite-tag }}
+        name: versite
+
+    - name: Resolve versite path
+      id: resolve-versite
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v versite >/dev/null 2>&1; then
+          echo "versite_path=$(command -v versite)" >> "$GITHUB_OUTPUT"
+        else
+          echo "versite not found in PATH after setup" >&2
+          exit 1
+        fi
+
+    - name: Run versite deploy
+      shell: bash
+      run: |
+        set -euo pipefail
+        args=("deploy")
+
+        # Global options
+        if [ -n "${{ inputs.remote }}" ]; then args+=("-r" "${{ inputs.remote }}"); fi
+        if [ -n "${{ inputs.branch }}" ]; then args+=("-b" "${{ inputs.branch }}"); fi
+        if [ -n "${{ inputs.message }}" ]; then args+=("-m" "${{ inputs.message }}"); fi
+        if [ "${{ inputs.push }}" = "true" ]; then args+=("-p"); fi
+        if [ -n "${{ inputs.deploy-prefix }}" ]; then args+=("--deploy-prefix" "${{ inputs.deploy-prefix }}"); fi
+
+        # Command-specific options
+        if [ -n "${{ inputs.title }}" ]; then args+=("-t" "${{ inputs.title }}"); fi
+
+        # Positionals
+        args+=("${{ inputs.path }}" "${{ inputs.version }}")
+
+        # Aliases (space/newline-separated, or YAML/JSON array)
+        if [ -n "${{ inputs.aliases }}" ]; then
+          ALIASES_RAW="${{ inputs.aliases }}"
+          NORM="$ALIASES_RAW"
+          # strip optional surrounding brackets
+          NORM="${NORM#[}"
+          NORM="${NORM%]}"
+          # replace commas and newlines with spaces
+          NORM=$(printf '%s' "$NORM" | tr ',\n' '  ')
+          # iterate tokens
+          for a in $NORM; do
+            args+=("$a")
+          done
+        fi
+
+        echo "> versite ${args[*]}"
+        versite "${args[@]}"
